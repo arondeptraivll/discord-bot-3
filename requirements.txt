@@ -1,3 +1,30 @@
-discord.py
-Flask
-python-dotenv
+# === Required Libraries for Discord Bot on Render ===
+
+# Core library for the Discord bot
+discord.py==2.3.2
+
+# Web server to keep the bot alive on Render
+Flask==3.0.3
+
+# For loading environment variables like the bot token
+python-dotenv==1.0.1
+
+# === Dependencies automatically included by the libraries above ===
+# These are listed to speed up pip's installation process
+
+aiohttp==3.9.5
+aiosignal==1.3.1
+async-timeout==4.0.3
+attrs==23.2.0
+certifi==2024.6.2
+charset-normalizer==3.3.2
+dnspython==2.6.1
+frozenlist==1.4.1
+idna==3.7
+itsdangerous==2.2.0
+Jinja2==3.1.4
+MarkupSafe==2.1.5
+multidict==6.0.5
+urllib3==2.2.1
+Werkzeug==3.0.3
+yarl==1.9.4
