@@ -1,5 +1,7 @@
+# main.py - PHIÊN BẢN CẢI TIẾN VỚI TÍNH NĂNG "THA THỨ"
+
 import discord
-from discord import app_commands
+from discord import app_commands, ui
 from discord.ext import commands
 import os
 import datetime
@@ -11,17 +13,16 @@ import asyncio
 TOKEN = os.getenv("DISCORD_TOKEN") 
 # ID kênh để ghi log
 LOG_CHANNEL_ID = 1387283127793225809
-# Tên role "Muted" - ĐÃ CẬP NHẬT THEO YÊU CẦU CỦA BẠN
+# Tên role "Muted"
 MUTED_ROLE_NAME = "Muted 🤐" 
 
-# --- CẤU HÌNH CHỐNG SPAM KHẮT KHE ---
+# --- CẤU HÌNH CHỐNG SPAM KHẮT KHE (ĐÃ CẬP NHẬT) ---
 SPAM_CONFIG = {
     'rate_limit_count': 7,      # Số tin nhắn để tính là spam nhanh
     'rate_limit_seconds': 4,    # Trong khoảng thời gian (giây)
     'duplicate_count': 3,       # Số tin nhắn giống hệt nhau liên tiếp để tính là spam
     'max_mentions': 5,          # Số lượng đề cập tối đa trong một tin nhắn
-    'caps_ratio': 0.7,          # Tỷ lệ chữ IN HOA (70%)
-    'min_caps_length': 15,      # Độ dài tối thiểu của tin nhắn để kiểm tra IN HOA
+    'max_word_count': 150,      # Số từ tối đa trong một tin nhắn (MỚI)
     'min_word_spam_length': 10, # Tin nhắn phải có ít nhất 10 từ để kiểm tra lặp từ
     'word_spam_ratio': 0.5,     # Nếu 1 từ chiếm 50% tin nhắn -> spam
     'mute_duration_hours': 3    # Thời gian mute là 3 giờ
@@ -45,12 +46,52 @@ user_spam_data = defaultdict(lambda: {
 # Nhập hàm keep_alive từ file keep_alive.py
 from keep_alive import keep_alive
 
+# --- CLASS UI CHO NÚT "THA THỨ" ---
+class ForgivenessView(ui.View):
+    def __init__(self, user_id: int):
+        super().__init__(timeout=None) # Timeout=None để nút không bị hết hạn
+        self.user_id = user_id
+
+    @ui.button(label="Tha Thứ", style=discord.ButtonStyle.success, custom_id="forgive_button")
+    async def forgive_button_callback(self, interaction: discord.Interaction, button: ui.Button):
+        # Chỉ người có quyền quản lý tin nhắn mới được nhấn
+        if not interaction.user.guild_permissions.manage_messages:
+            await interaction.response.send_message("Bạn không có quyền để thực hiện hành động này.", ephemeral=True)
+            return
+
+        user_to_forgive = interaction.guild.get_member(self.user_id)
+        
+        if self.user_id in user_spam_data:
+            user_spam_data[self.user_id]['warnings'] = 0
+            
+            button.disabled = True
+            button.label = "Đã Tha Thứ"
+            await interaction.message.edit(view=self)
+
+            response_embed = discord.Embed(
+                title="✅ Tha Thứ Thành Công",
+                description=f"Người thực hiện: {interaction.user.mention}\n"
+                            f"Đã reset số lần cảnh cáo của {user_to_forgive.mention if user_to_forgive else f'Người dùng ID: `{self.user_id}`'} về 0.\n"
+                            f"Lưu ý: Nếu người dùng đang bị mute, hình phạt mute vẫn sẽ tiếp tục cho đến khi hết hạn.",
+                color=discord.Color.green()
+            )
+            await interaction.channel.send(embed=response_embed)
+            # Gửi tin nhắn ẩn cho người nhấn nút để xác nhận
+            await interaction.response.send_message(f"Đã tha thứ cho người dùng.", ephemeral=True)
+
+        else:
+            button.disabled = True
+            button.label = "Lỗi: Không tìm thấy dữ liệu"
+            await interaction.message.edit(view=self)
+            await interaction.response.send_message("Không tìm thấy dữ liệu vi phạm của người dùng này (có thể đã bị reset hoặc bot đã khởi động lại).", ephemeral=True)
+
+
 # --- SỰ KIỆN BOT ---
 @bot.event
 async def on_ready():
     print(f'Bot đã đăng nhập với tên {bot.user}')
     print('-----------------------------------------')
-    print('Bot phiên bản NÂNG CẤP: Hình phạt theo cấp độ & Tự động dọn dẹp.')
+    print('Bot phiên bản CẢI TIẾN: Tính năng Tha Thứ & Chống spam tin nhắn dài.')
     print(f'Sử dụng role mute tên: "{MUTED_ROLE_NAME}"')
     print('-----------------------------------------')
     try:
@@ -76,6 +117,7 @@ async def on_message(message):
     user_data['recent_messages'].append(message)
     recent_messages = list(user_data['recent_messages'])
     content = message.content.lower()
+    words = content.split()
 
     # --- LOGIC CHỐNG SPAM NÂNG CẤP ---
     
@@ -96,7 +138,6 @@ async def on_message(message):
             return
             
     # 3. KIỂM TRA SPAM LẶP TỪ
-    words = content.split()
     if len(words) >= SPAM_CONFIG['min_word_spam_length']:
         word_counts = Counter(words)
         most_common_word_count = word_counts.most_common(1)[0][1]
@@ -109,13 +150,12 @@ async def on_message(message):
         await handle_spam([message], "Spam đề cập (mention)")
         return
     
-    # 5. KIỂM TRA SPAM CHỮ IN HOA (CAPS SPAM)
-    if len(content) > SPAM_CONFIG['min_caps_length']:
-        uppercase_chars = sum(1 for char in message.content if char.isupper())
-        alpha_chars = sum(1 for char in message.content if char.isalpha())
-        if alpha_chars > 0 and (uppercase_chars / alpha_chars) > SPAM_CONFIG['caps_ratio']:
-            await handle_spam([message], f"Gửi tin nhắn có tỷ lệ chữ IN HOA quá cao (>{int(SPAM_CONFIG['caps_ratio']*100)}%)")
-            return
+    # 5. [MỚI] KIỂM TRA SPAM TIN NHẮN DÀI
+    if len(words) > SPAM_CONFIG['max_word_count']:
+        await handle_spam([message], f"Gửi tin nhắn quá dài (hơn {SPAM_CONFIG['max_word_count']} từ)")
+        return
+
+    # 6. [ĐÃ LOẠI BỎ] KIỂM TRA SPAM CHỮ IN HOA.
 
     await bot.process_commands(message)
 
@@ -130,43 +170,40 @@ async def handle_spam(messages_to_delete: list[discord.Message], reason: str):
     author_id = author.id
     user_data = user_spam_data[author_id]
 
-    # --- BƯỚC 1: XÓA TIN NHẮN VI PHẠM (NHỮNG TIN GÂY TRIGGER) ---
+    # BƯỚC 1: XÓA TIN NHẮN
     triggering_messages_count = len(messages_to_delete)
     try:
         await channel.purge(limit=triggering_messages_count + 1, check=lambda m: m in messages_to_delete)
-    except discord.Forbidden:
-        if log_channel: await log_channel.send(f"**LỖI:** Bot không có quyền `Manage Messages` để xóa tin nhắn trong kênh {channel.mention}.")
-        return
-    except discord.HTTPException as e:
+    except Exception as e:
         if log_channel: await log_channel.send(f"**LỖI:** Không thể xóa tin nhắn vi phạm: `{e}`")
-        return
-
-    # --- BƯỚC 2: TỰ ĐỘNG DỌN DẸP TIN NHẮN TRONG 1 GIỜ QUA ---
+    
+    # BƯỚC 2: TỰ ĐỘNG DỌN DẸP LỊCH SỬ GẦN ĐÂY
     purged_in_hour_count = 0
     try:
         one_hour_ago = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)
         purged_messages = await channel.purge(limit=200, check=lambda m: m.author == author, after=one_hour_ago)
         purged_in_hour_count = len(purged_messages)
-    except discord.Forbidden:
-        if log_channel: await log_channel.send(f"**CẢNH BÁO:** Bot không có quyền để xóa lịch sử tin nhắn của {author.mention} trong kênh {channel.mention}.")
-    except discord.HTTPException as e:
-        if log_channel: await log_channel.send(f"**LỖI:** Không thể xóa lịch sử tin nhắn: `{e}`")
+    except Exception as e:
+        if log_channel: await log_channel.send(f"**CẢNH BÁO:** Bot không thể dọn dẹp lịch sử tin nhắn của {author.mention}: `{e}`")
     
     total_deleted_count = triggering_messages_count + purged_in_hour_count
 
-    # --- BƯỚC 3: TĂNG CẢNH CÁO VÀ ÁP DỤNG HÌNH PHẠT ---
+    # BƯỚC 3: TĂNG CẢNH CÁO VÀ ÁP DỤNG HÌNH PHẠT
     user_data['warnings'] += 1
     warning_count = user_data['warnings']
+    
+    # Tạo view tha thứ
+    view = ForgivenessView(user_id=author.id)
 
     # CẤP 1: CẢNH CÁO
     if warning_count == 1:
         embed = discord.Embed(
             title="⚠️ CẢNH CÁO SPAM (Lần 1) ⚠️",
-            description=f"**Người dùng:** {author.mention}\n**Lý do:** {reason}\n**Hành động:** Đã xóa **{total_deleted_count} tin nhắn** (bao gồm tin nhắn trong 1 giờ qua) và gửi cảnh cáo qua DM.",
+            description=f"**Người dùng:** {author.mention}\n**Lý do:** {reason}\n**Hành động:** Đã xóa **{total_deleted_count} tin nhắn** và gửi cảnh cáo.",
             color=discord.Color.yellow()
         )
         embed.set_footer(text=f"Trong kênh: #{channel.name}")
-        if log_channel: await log_channel.send(embed=embed)
+        if log_channel: await log_channel.send(embed=embed, view=view)
         try:
             await author.send(
                 f"Bạn nhận được **cảnh cáo lần 1** tại server `{guild.name}` vì lý do: **{reason}**.\n"
@@ -184,7 +221,7 @@ async def handle_spam(messages_to_delete: list[discord.Message], reason: str):
 
         embed = discord.Embed(title="🚫 TỰ ĐỘNG MUTE (Lần 2) 🚫", color=discord.Color.orange())
         embed.description=f"**Người dùng:** {author.mention}\n**Lý do:** {reason}\n**Hành động:** Đã xóa **{total_deleted_count} tin nhắn** và mute **{SPAM_CONFIG['mute_duration_hours']} giờ**."
-        if log_channel: await log_channel.send(embed=embed)
+        if log_channel: await log_channel.send(embed=embed, view=view)
         
         try:
             await author.add_roles(muted_role, reason=f"Tự động mute do vi phạm spam lần 2. ({reason})")
@@ -195,6 +232,7 @@ async def handle_spam(messages_to_delete: list[discord.Message], reason: str):
             
             await asyncio.sleep(SPAM_CONFIG['mute_duration_hours'] * 3600)
             
+            # Phải fetch lại member để đảm bảo thông tin roles là mới nhất
             fresh_member = await guild.fetch_member(author_id)
             if muted_role in fresh_member.roles:
                 await fresh_member.remove_roles(muted_role, reason="Tự động gỡ mute.")
@@ -210,6 +248,7 @@ async def handle_spam(messages_to_delete: list[discord.Message], reason: str):
     elif warning_count >= 3:
         embed = discord.Embed(title="🔨 TỰ ĐỘNG BAN (Lần 3) 🔨", color=discord.Color.red())
         embed.description=f"**Người dùng:** {author.mention} (`{author.id}`)\n**Lý do:** {reason}\n**Hành động:** Tái phạm nhiều lần, **BAN vĩnh viễn**. Đã xóa **{total_deleted_count} tin nhắn** trước khi ban."
+        # Không có nút tha thứ cho trường hợp BAN vì người dùng đã bị loại khỏi server
         if log_channel: await log_channel.send(embed=embed)
 
         try:
@@ -218,13 +257,15 @@ async def handle_spam(messages_to_delete: list[discord.Message], reason: str):
         
         try:
             await guild.ban(author, reason=f"Tự động ban do vi phạm spam lần 3. (Lý do cuối: {reason})", delete_message_days=1)
+            # Dọn dẹp dữ liệu của người dùng đã bị ban
             user_spam_data.pop(author_id, None)
         except discord.Forbidden:
              if log_channel: await log_channel.send(f"**LỖI:** Bot không có quyền để BAN {author.mention}. Hãy kiểm tra quyền 'Ban Members'.")
         except Exception as e:
             if log_channel: await log_channel.send(f"**LỖI BẤT NGỜ KHI BAN:** {e}")
 
-# --- CÁC LỆNH SLASH (/) ---
+# --- CÁC LỆNH SLASH (/) - Không thay đổi ---
+# (Giữ nguyên các lệnh /purge_user, /kick, /ban, /clear, /mute, /unmute và on_app_command_error)
 
 @bot.tree.command(name="purge_user", description="Xóa tin nhắn của một thành viên trong một khoảng thời gian.")
 @app_commands.describe(member="Thành viên có tin nhắn cần xóa.", hours="Xóa tin nhắn trong bao nhiêu giờ qua? (Mặc định là 24)")
@@ -298,8 +339,10 @@ async def mute(interaction: discord.Interaction, member: discord.Member, minutes
     await interaction.response.send_message(f"Đã mute {member.mention} trong {minutes} phút. Lý do: {reason}")
     if minutes > 0:
         await asyncio.sleep(minutes * 60)
-        if muted_role in member.roles:
-            await member.remove_roles(muted_role, reason="Hết thời gian mute.")
+        # Fetch lại member để đảm bảo thông tin mới nhất
+        fresh_member = await interaction.guild.fetch_member(member.id)
+        if muted_role in fresh_member.roles:
+            await fresh_member.remove_roles(muted_role, reason="Hết thời gian mute.")
             if log_channel:
                 await log_channel.send(f"Đã tự động gỡ mute cho {member.mention} sau khi hết hạn.")
 
@@ -326,5 +369,5 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
             await interaction.followup.send("Đã có lỗi xảy ra khi thực hiện lệnh.", ephemeral=True)
 
 # --- CHẠY BOT ---
-keep_alive() # Bắt đầu chạy web server để host trên Render
-bot.run(TOKEN) # Bắt đầu chạy bot
+keep_alive()
+bot.run(TOKEN)
